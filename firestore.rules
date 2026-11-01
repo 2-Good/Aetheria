@@ -1,0 +1,88 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all unknown paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Helper Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Validation helper for User entity
+    function isValidUser(data) {
+      return data.uid is string && data.uid == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 64;
+    }
+
+    // Validation helper for Conversation entity
+    function isValidConversation(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.title is string && data.title.size() <= 120 &&
+             data.createdAt is number &&
+             data.updatedAt is number;
+    }
+
+    // Validation helper for Message entity
+    function isValidMessage(data) {
+      return data.id is string && isValidId(data.id) &&
+             data.conversationId is string && isValidId(data.conversationId) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.role in ['user', 'assistant', 'system'] &&
+             data.content is string && data.content.size() <= 10000 &&
+             data.timestamp is string && data.timestamp.size() <= 32 &&
+             data.createdAt is number;
+    }
+
+    // User Profile Collection
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+      allow create: if isSignedIn() && isValidId(userId) && request.auth.uid == userId && isValidUser(incoming());
+      allow update: if isSignedIn() && isValidId(userId) && request.auth.uid == userId && isValidUser(incoming());
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+    }
+
+    // Conversations Collection
+    match /conversations/{conversationId} {
+      allow get: if isSignedIn() && isValidId(conversationId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(conversationId) && incoming().userId == request.auth.uid && isValidConversation(incoming());
+      allow update: if isSignedIn() && isValidId(conversationId) && resource.data.userId == request.auth.uid && incoming().userId == request.auth.uid && isValidConversation(incoming());
+      allow delete: if isSignedIn() && isValidId(conversationId) && resource.data.userId == request.auth.uid;
+
+      // Subcollection: Messages
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(conversationId) && isValidId(messageId) &&
+                   get(/databases/$(database)/documents/conversations/$(conversationId)).data.userId == request.auth.uid;
+        allow list: if isSignedIn() && isValidId(conversationId) &&
+                    get(/databases/$(database)/documents/conversations/$(conversationId)).data.userId == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(conversationId) && isValidId(messageId) &&
+                      get(/databases/$(database)/documents/conversations/$(conversationId)).data.userId == request.auth.uid &&
+                      incoming().userId == request.auth.uid &&
+                      incoming().conversationId == conversationId &&
+                      isValidMessage(incoming());
+        allow update: if false; // Messages are immutable
+        allow delete: if isSignedIn() && isValidId(conversationId) && isValidId(messageId) &&
+                      get(/databases/$(database)/documents/conversations/$(conversationId)).data.userId == request.auth.uid;
+      }
+    }
+  }
+}
